@@ -46,7 +46,7 @@ def endpoint_iniciar_daemon() -> Dict[str, Any]:
         )
 
 
-@router.post("/detener", summary="Detener daemon procesador")
+@router.post("/detener", summary="DETENER CONSULTA procesador")
 def endpoint_detener_daemon() -> Dict[str, Any]:
     """
     Detiene el daemon procesador de forma controlada.

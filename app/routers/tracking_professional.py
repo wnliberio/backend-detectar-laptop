@@ -1,22 +1,28 @@
-# app/routers/tracking_professional.py - VERSIÓN ACTUALIZADA
+# app/routers/tracking_professional.py - VERSIÓN ACTUALIZADA CON DESCARGA DE REPORTES
 """
 Router para sistema de tracking actualizado a usar de_clientes_rpa_v2
+Incluye endpoint de descarga de reportes desde de_reportes_rpa
 """
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
+import os
 
 from app.services.tracking_professional import (
     get_paginas_activas,
     get_clientes_with_filters,
     update_cliente_estado,
     crear_proceso_completo,
-    get_estadisticas
+    get_estadisticas,
+    get_reporte_by_cliente,
+    get_ruta_reporte
 )
 
 router = APIRouter(prefix="/tracking", tags=["tracking"])
+
 
 # ===== MODELOS DE REQUEST =====
 
@@ -24,11 +30,13 @@ class ActualizarEstadoClienteRequest(BaseModel):
     estado: str = Field(..., description="Nuevo ESTADO_CONSULTA del cliente")
     mensaje_error: Optional[str] = Field(None, description="Mensaje de error opcional")
 
+
 class CrearProcesoRequest(BaseModel):
     cliente_id: int = Field(..., description="ID del cliente en de_clientes_rpa_v2")
-    paginas_codigos: List[str] = Field(..., min_items=1, description="Códigos de páginas a consultar")
+    paginas_codigos: List[str] = Field(..., min_length=1, description="Códigos de páginas a consultar")
     headless: bool = Field(False, description="Ejecutar en modo headless")
     generate_report: bool = Field(True, description="Generar reporte al finalizar")
+
 
 # ===== ENDPOINTS BÁSICOS =====
 
@@ -44,10 +52,16 @@ def health_check() -> Dict[str, Any]:
             "timestamp": datetime.now().isoformat(),
             "paginas_disponibles": len(paginas),
             "tabla_clientes": "de_clientes_rpa_v2",
-            "campos_sincronizacion": ["ESTADO_CONSULTA", "FECHA_CREACION_REGISTRO"]
+            "campos_disponibles": [
+                "CEDULA", "NOMBRES_CLIENTE", "APELLIDOS_CLIENTE",
+                "PRODUCTO", "AGENCIA", "ESTADO_CIVIL",
+                "CEDULA_CONYUGE", "NOMBRES_CONYUGE", "APELLIDOS_CONYUGE",
+                "CEDULA_CODEUDOR", "NOMBRES_CODEUDOR", "APELLIDOS_CODEUDOR"
+            ]
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Sistema no saludable: {str(e)}")
+
 
 @router.get("/paginas", summary="Listar páginas disponibles")
 def listar_paginas_disponibles() -> List[Dict[str, Any]]:
@@ -59,6 +73,7 @@ def listar_paginas_disponibles() -> List[Dict[str, Any]]:
         return get_paginas_activas()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo páginas: {str(e)}")
+
 
 # ===== ENDPOINT PRINCIPAL DE CLIENTES =====
 
@@ -78,6 +93,8 @@ def listar_clientes_con_filtros(
     - ESTADO_CONSULTA (Pendiente, En_Proceso, Procesado, Error)
     - FECHA_CREACION_SOLICITUD, FECHA_CREACION_REGISTRO
     - ID_PRODUCTO, PRODUCTO
+    - CEDULA_CONYUGE, NOMBRES_CONYUGE, APELLIDOS_CONYUGE
+    - CEDULA_CODEUDOR, NOMBRES_CODEUDOR, APELLIDOS_CODEUDOR
     """
     try:
         return get_clientes_with_filters(
@@ -88,6 +105,7 @@ def listar_clientes_con_filtros(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error obteniendo clientes: {str(e)}")
+
 
 # ===== ENDPOINT DE ACTUALIZACIÓN DE ESTADO =====
 
@@ -121,6 +139,66 @@ def actualizar_estado_cliente(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error actualizando cliente: {str(e)}")
 
+
+# ===== ENDPOINTS DE REPORTES =====
+
+@router.get("/clientes/{cliente_id}/reporte", summary="Obtener información del reporte de un cliente")
+def obtener_reporte_cliente(cliente_id: int) -> Dict[str, Any]:
+    """
+    Obtiene la información del reporte más reciente de un cliente.
+    """
+    try:
+        reporte = get_reporte_by_cliente(cliente_id)
+        
+        if not reporte:
+            raise HTTPException(status_code=404, detail="No hay reporte disponible para este cliente")
+        
+        return {
+            "success": True,
+            "reporte": reporte
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error obteniendo reporte: {str(e)}")
+
+
+@router.get("/clientes/{cliente_id}/reporte/download", summary="Descargar reporte de un cliente")
+def descargar_reporte_cliente(cliente_id: int):
+    """
+    Descarga el archivo DOCX del reporte más reciente de un cliente.
+    """
+    try:
+        ruta = get_ruta_reporte(cliente_id)
+        
+        if not ruta:
+            raise HTTPException(
+                status_code=404, 
+                detail="No hay reporte disponible para este cliente o el archivo no existe"
+            )
+        
+        if not os.path.exists(ruta):
+            raise HTTPException(
+                status_code=404, 
+                detail="El archivo del reporte no se encuentra en el servidor"
+            )
+        
+        filename = os.path.basename(ruta)
+        
+        return FileResponse(
+            path=ruta,
+            filename=filename,
+            media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error descargando reporte: {str(e)}")
+
+
 # ===== ENDPOINT DE PROCESOS =====
 
 @router.post("/procesos", summary="Crear proceso de consulta")
@@ -148,12 +226,13 @@ def crear_proceso(request: CrearProcesoRequest) -> Dict[str, Any]:
             "job_id": job_id,
             "cliente_id": request.cliente_id,
             "paginas_solicitadas": request.paginas_codigos,
-            "message": f"Proceso creado exitosamente"
+            "message": "Proceso creado exitosamente"
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creando proceso: {str(e)}")
+
 
 # ===== ENDPOINT DE ESTADÍSTICAS =====
 
@@ -166,7 +245,6 @@ def obtener_estadisticas(
     Obtiene estadísticas del sistema incluyendo:
     - Contadores de clientes por estado
     - Contadores de procesos
-    - Información de consult as
     """
     try:
         return get_estadisticas(

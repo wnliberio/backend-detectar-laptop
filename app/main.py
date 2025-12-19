@@ -1,7 +1,4 @@
-# app/main.py - VERSIÓN FINAL (con health check corregido)
-
-# ⚠️ CRÍTICO: Cargar .env ANTES de cualquier otra importación
-
+# app/main.py - VERSIÓN ACTUALIZADA (sin router reports legacy)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +8,7 @@ from sqlalchemy.orm import Session
 app = FastAPI(
     title="Sistema de Consultas Función Judicial",
     description="Sistema automatizado con procesamiento en background",
-    version="3.0.0"
+    version="3.1.0"
 )
 
 # Configurar CORS
@@ -31,7 +28,7 @@ app.add_middleware(
 
 # ===== IMPORTAR ROUTERS =====
 
-# Router de Tracking (principal)
+# Router de Tracking (principal - incluye descarga de reportes)
 try:
     from app.routers.tracking_professional import router as tracking_router
     app.include_router(tracking_router, prefix="/api")
@@ -47,7 +44,7 @@ try:
 except ImportError as e:
     print(f"❌ Error cargando router daemon: {e}")
 
-# Router de Sincronización (NUEVO)
+# Router de Sincronización
 try:
     from app.api.endpoints.sincronizacion import router as sync_router
     app.include_router(sync_router)
@@ -55,19 +52,13 @@ try:
 except ImportError as e:
     print(f"⚠️ Router sincronización no disponible: {e}")
 
-# Router de Reports
-try:
-    from app.routers.reports import router as reports_router
-    app.include_router(reports_router, prefix="/api")
-    print("✅ Router reports cargado")
-except ImportError as e:
-    print(f"⚠️ Router reports no disponible: {e}")
+# NOTA: Router reports.py eliminado - la descarga de reportes ahora está en tracking_professional
 
 # ===== EVENTOS DE STARTUP =====
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Iniciando Sistema de Consultas v3.0")
+    print("🚀 Iniciando Sistema de Consultas v3.1.0")
 
     # --- Verificar DB destino ---
     try:
@@ -86,7 +77,7 @@ async def startup_event():
     except Exception as e:
         print(f"❌ Error de conexión a DB2: {e}")
 
-    # --- NUEVO: Inicializar Scheduler de Sincronización ---
+    # --- Inicializar Scheduler de Sincronización ---
     try:
         from app.services.scheduler_sincronizacion import inicializar_scheduler
         if inicializar_scheduler():
@@ -100,6 +91,7 @@ async def startup_event():
 
     print("🎯 Sistema listo para recibir requests")
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Limpieza al cerrar el sistema"""
@@ -112,7 +104,7 @@ async def shutdown_event():
     except Exception as e:
         print(f"⚠️ Error deteniendo scheduler: {e}")
     
-    # Detener daemon si está corriendo
+    # DETENER CONSULTA si está corriendo
     try:
         from app.services.daemon_procesador import detener_daemon, obtener_estado_daemon
         estado = obtener_estado_daemon()
@@ -125,6 +117,7 @@ async def shutdown_event():
     
     print("👋 Sistema cerrado")
 
+
 # ===== ENDPOINTS RAÍZ =====
 
 @app.get("/")
@@ -133,13 +126,14 @@ def root():
     return {
         "ok": True,
         "service": "Sistema de Consultas Función Judicial",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "features": {
             "tracking_granular": True,
             "procesamiento_automatico": True,
             "daemon_controlable": True,
             "sincronizacion_automatica": True,
-            "solo_funcion_judicial": True
+            "descarga_reportes": True,
+            "datos_conyuge_codeudor": True
         },
         "endpoints": {
             "daemon": [
@@ -155,28 +149,34 @@ def root():
             "tracking": [
                 "/api/tracking/health",
                 "/api/tracking/paginas",
-                "/api/tracking/clientes"
+                "/api/tracking/clientes",
+                "/api/tracking/clientes/{id}/reporte/download"
             ]
         },
         "docs": "/docs",
         "status": "active"
     }
 
+
 @app.get("/health")
 def health_check():
     """Health check completo del sistema"""
     health_status = {
         "status": "healthy",
-        "timestamp": "2025-01-20T00:00:00Z",
-        "version": "3.0.0",
+        "timestamp": "",
+        "version": "3.1.0",
         "components": {}
     }
+    
+    # Timestamp actual
+    from datetime import datetime
+    health_status["timestamp"] = datetime.now().isoformat()
     
     # Verificar BD destino
     try:
         from app.db import SessionLocal
         db = SessionLocal()
-        db.execute(text("SELECT 1"))  # ✅ CORREGIDO: usar text()
+        db.execute(text("SELECT 1"))
         db.close()
         health_status["components"]["database"] = "ok"
     except Exception as e:

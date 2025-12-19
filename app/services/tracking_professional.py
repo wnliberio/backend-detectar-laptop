@@ -1,23 +1,27 @@
-# app/services/tracking_professional.py - VERSIÓN FINAL COMPLETA
+# app/services/tracking_professional.py - VERSIÓN ACTUALIZADA CON CÓNYUGE/CODEUDOR Y REPORTES
 # Estados válidos en BD: 'Pendiente', 'Procesando', 'Procesado', 'Error'
 """
 Servicio profesional de tracking actualizado para usar de_clientes_rpa_v2
+Incluye datos de cónyuge, codeudor y gestión de reportes
 """
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc
+import os
 
 from app.db import SessionLocal
-from app.db.models import DeClienteV2  # ✅ NUEVA TABLA
+from app.db.models import DeClienteV2
 from app.db.models_new import (
     DeProceso, DeConsulta, DePagina, DeReporte
 )
 
+
 def get_db_session() -> Session:
     """Obtiene una sesión de base de datos"""
     return SessionLocal()
+
 
 def get_paginas_activas() -> List[Dict[str, Any]]:
     """
@@ -42,8 +46,12 @@ def get_paginas_activas() -> List[Dict[str, Any]]:
             }
             for p in paginas
         ]
+    except Exception as e:
+        print(f"Error en get_paginas_activas: {e}")
+        return []
     finally:
         db.close()
+
 
 def get_clientes_with_filters(
     estado: Optional[str] = None,
@@ -53,7 +61,7 @@ def get_clientes_with_filters(
 ) -> List[Dict[str, Any]]:
     """
     Obtiene clientes de de_clientes_rpa_v2 con filtros opcionales.
-    Retorna los campos relevantes para el frontend.
+    Retorna los campos relevantes para el frontend, incluyendo cónyuge y codeudor.
     
     Estados válidos en BD: 'Pendiente', 'Procesando', 'Procesado', 'Error'
     
@@ -115,26 +123,44 @@ def get_clientes_with_filters(
                 estado_frontend = "En_Proceso"
             
             resultado.append({
+                # Campos principales
                 "id": cliente.id,
                 "ID_SOLICITUD": cliente.ID_SOLICITUD,
-                "ESTADO": cliente.ESTADO,
-                "AGENCIA": cliente.AGENCIA,
                 "CEDULA": cliente.CEDULA,
                 "NOMBRES_CLIENTE": cliente.NOMBRES_CLIENTE,
                 "APELLIDOS_CLIENTE": cliente.APELLIDOS_CLIENTE,
-                "ESTADO_CONSULTA": estado_frontend,  # Convertido para frontend
-                "FECHA_CREACION_SOLICITUD": cliente.FECHA_CREACION_SOLICITUD.isoformat() if cliente.FECHA_CREACION_SOLICITUD else None,
-                "FECHA_CREACION_REGISTRO": cliente.FECHA_CREACION_REGISTRO.isoformat() if cliente.FECHA_CREACION_REGISTRO else None,
-                # Campos adicionales opcionales para compatibilidad
+                "ESTADO_CONSULTA": estado_frontend,
+                
+                # Información de la solicitud
+                "ESTADO": cliente.ESTADO,
+                "AGENCIA": cliente.AGENCIA,
                 "ID_PRODUCTO": cliente.ID_PRODUCTO,
                 "PRODUCTO": cliente.PRODUCTO,
-                "ESTADO_CIVIL": cliente.ESTADO_CIVIL
+                "ESTADO_CIVIL": cliente.ESTADO_CIVIL,
+                
+                # Fechas
+                "FECHA_CREACION_SOLICITUD": cliente.FECHA_CREACION_SOLICITUD.isoformat() if cliente.FECHA_CREACION_SOLICITUD else None,
+                "FECHA_CREACION_REGISTRO": cliente.FECHA_CREACION_REGISTRO.isoformat() if cliente.FECHA_CREACION_REGISTRO else None,
+                
+                # ===== DATOS DE CÓNYUGE =====
+                "CEDULA_CONYUGE": cliente.CEDULA_CONYUGE,
+                "NOMBRES_CONYUGE": cliente.NOMBRES_CONYUGE,
+                "APELLIDOS_CONYUGE": cliente.APELLIDOS_CONYUGE,
+                
+                # ===== DATOS DE CODEUDOR =====
+                "CEDULA_CODEUDOR": cliente.CEDULA_CODEUDOR,
+                "NOMBRES_CODEUDOR": cliente.NOMBRES_CODEUDOR,
+                "APELLIDOS_CODEUDOR": cliente.APELLIDOS_CODEUDOR,
             })
         
         return resultado
         
+    except Exception as e:
+        print(f"Error en get_clientes_with_filters: {e}")
+        raise e
     finally:
         db.close()
+
 
 def update_cliente_estado(
     cliente_id: int,
@@ -168,9 +194,111 @@ def update_cliente_estado(
         
     except Exception as e:
         db.rollback()
+        print(f"Error en update_cliente_estado: {e}")
         raise e
     finally:
         db.close()
+
+
+# ===== FUNCIONES DE REPORTES =====
+
+def get_reporte_by_cliente(cliente_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Obtiene el reporte más reciente de un cliente.
+    Busca en de_reportes_rpa por cliente_id.
+    """
+    db = get_db_session()
+    try:
+        reporte = db.query(DeReporte).filter(
+            DeReporte.cliente_id == cliente_id,
+            DeReporte.generado_exitosamente == True
+        ).order_by(DeReporte.fecha_generacion.desc()).first()
+        
+        if not reporte:
+            return None
+        
+        return {
+            "id": reporte.id,
+            "proceso_id": reporte.proceso_id,
+            "cliente_id": reporte.cliente_id,
+            "job_id": reporte.job_id,
+            "nombre_archivo": reporte.nombre_archivo,
+            "ruta_archivo": reporte.ruta_archivo,
+            "tipo_archivo": reporte.tipo_archivo,
+            "tamano_bytes": reporte.tamano_bytes,
+            "fecha_generacion": reporte.fecha_generacion.isoformat() if reporte.fecha_generacion else None,
+            "generado_exitosamente": reporte.generado_exitosamente
+        }
+    except Exception as e:
+        print(f"Error en get_reporte_by_cliente: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def get_reporte_by_proceso(proceso_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Obtiene el reporte asociado a un proceso específico.
+    """
+    db = get_db_session()
+    try:
+        reporte = db.query(DeReporte).filter(
+            DeReporte.proceso_id == proceso_id,
+            DeReporte.generado_exitosamente == True
+        ).order_by(DeReporte.fecha_generacion.desc()).first()
+        
+        if not reporte:
+            return None
+        
+        return {
+            "id": reporte.id,
+            "proceso_id": reporte.proceso_id,
+            "cliente_id": reporte.cliente_id,
+            "job_id": reporte.job_id,
+            "nombre_archivo": reporte.nombre_archivo,
+            "ruta_archivo": reporte.ruta_archivo,
+            "tipo_archivo": reporte.tipo_archivo,
+            "tamano_bytes": reporte.tamano_bytes,
+            "fecha_generacion": reporte.fecha_generacion.isoformat() if reporte.fecha_generacion else None,
+            "generado_exitosamente": reporte.generado_exitosamente
+        }
+    except Exception as e:
+        print(f"Error en get_reporte_by_proceso: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def get_ruta_reporte(cliente_id: int) -> Optional[str]:
+    """
+    Obtiene la ruta del archivo del reporte más reciente de un cliente.
+    Verifica que el archivo exista en disco.
+    """
+    db = get_db_session()
+    try:
+        reporte = db.query(DeReporte).filter(
+            DeReporte.cliente_id == cliente_id,
+            DeReporte.generado_exitosamente == True
+        ).order_by(DeReporte.fecha_generacion.desc()).first()
+        
+        if not reporte:
+            return None
+        
+        ruta = reporte.ruta_archivo
+        
+        # Verificar que el archivo existe
+        if ruta and os.path.exists(ruta):
+            return ruta
+        
+        return None
+    except Exception as e:
+        print(f"Error en get_ruta_reporte: {e}")
+        return None
+    finally:
+        db.close()
+
+
+# ===== FUNCIONES DE VALIDACIÓN =====
 
 def validar_datos_cliente_para_paginas(
     cliente_id: int,
@@ -178,7 +306,6 @@ def validar_datos_cliente_para_paginas(
 ) -> List[str]:
     """
     Valida que el cliente tenga los datos necesarios para consultar las páginas especificadas.
-    
     Retorna lista de errores (vacía si todo está bien).
     """
     db = get_db_session()
@@ -205,12 +332,7 @@ def validar_datos_cliente_para_paginas(
         for pagina in paginas:
             codigo = pagina.codigo
             
-            # Mapeo de validaciones por página
-            if codigo in ['ruc']:
-                # RUC no está en V2, saltar
-                pass
-            
-            elif codigo in ['deudas', 'mercado_valores', 'supercias_persona']:
+            if codigo in ['deudas', 'mercado_valores', 'supercias_persona']:
                 if not cliente.CEDULA or len(str(cliente.CEDULA)) != 10:
                     errores.append(f"{pagina.nombre} requiere CI válida (10 dígitos)")
             
@@ -223,8 +345,12 @@ def validar_datos_cliente_para_paginas(
                     errores.append(f"{pagina.nombre} requiere nombre y apellido completos")
         
         return errores
+    except Exception as e:
+        print(f"Error en validar_datos_cliente_para_paginas: {e}")
+        return [f"Error de validación: {str(e)}"]
     finally:
         db.close()
+
 
 def crear_proceso_completo(
     cliente_id: int,
@@ -283,9 +409,11 @@ def crear_proceso_completo(
         
     except Exception as e:
         db.rollback()
+        print(f"Error en crear_proceso_completo: {e}")
         raise e
     finally:
         db.close()
+
 
 def get_estadisticas(
     fecha_desde: Optional[str] = None,
@@ -367,32 +495,11 @@ def get_estadisticas(
                 'fallidos': procesos_fallidos
             }
         }
-    finally:
-        db.close()
-
-def get_proceso_by_job_id(job_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Obtiene información de un proceso por su job_id.
-    Se usa en routers para obtener detalles del proceso.
-    """
-    db = get_db_session()
-    try:
-        proceso = db.query(DeProceso).filter(DeProceso.job_id == job_id).first()
-        
-        if not proceso:
-            return None
-        
+    except Exception as e:
+        print(f"Error en get_estadisticas: {e}")
         return {
-            'id': proceso.id,
-            'cliente_id': proceso.cliente_id,
-            'job_id': proceso.job_id,
-            'estado': proceso.estado,
-            'fecha_creacion': proceso.fecha_creacion.isoformat() if proceso.fecha_creacion else None,
-            'fecha_inicio': proceso.fecha_inicio.isoformat() if proceso.fecha_inicio else None,
-            'fecha_fin': proceso.fecha_fin.isoformat() if proceso.fecha_fin else None,
-            'total_paginas_solicitadas': proceso.total_paginas_solicitadas,
-            'total_paginas_exitosas': proceso.total_paginas_exitosas,
-            'total_paginas_fallidas': proceso.total_paginas_fallidas
+            'clientes': {'total': 0, 'pendientes': 0, 'procesando': 0, 'procesados': 0, 'errores': 0},
+            'procesos': {'total': 0, 'completados': 0, 'con_errores': 0, 'fallidos': 0}
         }
     finally:
         db.close()
